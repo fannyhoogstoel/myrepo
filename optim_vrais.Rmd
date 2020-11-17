@@ -186,6 +186,9 @@ coef(fit)
 Optimisation pour C-index
 
 ```{r}
+# Reflexion et recherche faite avec Sofia
+
+
 B0 <- -1.5
 Bs <- 1
 Bht <- 1.5
