@@ -1,0 +1,251 @@
+---
+title: "Optimisation / vraisemblance"
+output:
+  html_notebook:
+    number_sections: yes
+    paged.print: yes
+    smart: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r}
+pacman::p_load(tidyverse)
+```
+
+# Vraisemblance d'un modèle logistique
+## Définition
+Soit un modèle $m$ estimant la probabilité de succès d'une variable de Bernoulli $Y$ selon un prédicteur $X$.
+
+Au sein d'un échantillon donné, la probabilité de bonne classification pour un individu $i$ peut s'acrire :
+$$l_i(m | X_i) = P(Y_i = 1 | X_i)^{Y_i} \times [1 - P(Y_i = 1 | X_i)]^{1 - Y_i}$$
+Donc vraisemblance pour succes P(Yi=1|Xi)^yi et vraisemblance pour echec [1-P(Yi=1|Xi)]^1-yi
+
+Exemple :
+
+| $X_i$ | $Y_i$ | $P(Y_i = 1 | X_i)$ | $l_i$ |
+:------:|:-----:|:------------------:|:-----:|
+| $X_1$ | 1     | 0.7                |  0.7  |
+| $X_1$ | 0     | 0.2                |  0.8  |
+
+
+On définit la vraisemblance de $m$ pour un échantillon de $n$ individus par le produit des vraisemblances pour les $i = 1, ..., n$ individus de l'échantillon :
+
+$$L(m | X) = \prod_{i = 1}^{n} l_i(m | X_i)$$
+Si on reprend l'exemple : 0.7 x 0.8
+
+Et la log-vraisemblance par le logarithme de la vraisemblance :
+$$\log L(m | X) = \log \left(\prod_{i = 1}^{n} l_i(m | X_i) \right) = \sum_{i = 1}^{n} \log l_i(m | X_i)$$
+Quelle est la log-vraisemblance pour l'échantillon de 2 sujets ci-dessus ?
+```{r}
+log(0.7)+log(0.8)
+```
+Rappel : log(a)+log(b) = log (a*b)
+
+## Exemple
+Le tableau `MASS::birthwt` recense les enfants de petits poids de naissance (`low`) dans un échantillon de 189 naissances selon différentes caractéristiques maternelles dont le tabagisme (`smoke`), les antécédents d'hypertension (`ht`) et la notion d'irritabilité urinaire (`ui`).
+
+On propose de prédire les données selon les modèles de régression logistique suivants (dont les paramètres ne sont pas optimisés) :
+
+- $m_1$ : $\beta_0 = -1.5, \beta_{smoke} = 1, \beta_{ht} = 1.5, \beta_{ui} = 1$
+- $m_2$ : $\beta_0 = -1, \beta_{smoke} = 0.5, \beta_{ht} = 1, \beta_{ui} = 1$
+
+Calculer la log-vraisemblance pour ces 2 modèles.
+
+```{r}
+bw <- MASS::birthwt %>% 
+  select(low, smoke, ui, ht)
+
+head(bw)
+B0 <- -1.5
+Bs <- 1
+Bht <- 1.5
+Bui <- 1
+PL <- B0 + Bs*0 + Bht*1 + Bui*0
+plogis(PL)
+1-plogis(PL)
+
+```
+```{r}
+
+B0 <- -1.5
+Bs <- 1
+Bht <- 1.5
+Bui <- 1
+
+bw %>% 
+  mutate(
+    predlin = B0 + Bs*smoke + Bht*ht + Bui*ui,
+    pred = plogis(predlin),
+    vrais = ifelse(low==1,pred,1-pred),
+    log_vrais = log(vrais)
+  ) %>%
+  pull(log_vrais) %>%
+  sum()
+
+```
+
+log(p/(1-p) --> fonction qlogis(p)
+1/(1+exp(-x)) --> fonction plogis(x)
+
+Les coeff nous permettent de calculer une probabilité de succès y=(B0+Bsxs+Bhtxht+Buixui) --> predicteur linéaire (PL)
+avec PL = logit(p)=log(P/(1-p))
+Si on est interessés par une proba entre 0 et 1, P(Y=1)=logit^-1(PL) on fait donc plogis(PL) pour trouver cette proba
+
+
+On cherche par la suite à optimiser ces coefficients.
+
+# Optimisation
+L'optimisation mathématiques vise à estimer les paramètres permettant de minimiser ou maximiser une fonction sur un ensemble.
+
+Exemple : estimer la valeur de $x$ qui minimise la fonction $f(x) = x^3 - \frac{x^2}{2} - 3 x + 2$ sur l'intervalle $[-1, 2]$.
+
+```{r}
+fun0 <- function(x) x ^ 3 - .5 * x ^ 2 - 3 * x + 2 
+
+ggplot() +
+  geom_function(fun = fun0) +
+  theme_bw() +
+  xlim(-1, 2)
+```
+
+On peut sur une fonction simple comme celle-ci le faire à la main, chercher les valeurs ou la fonction s'annule pour trouver les minimas et maximas. 
+
+De nombreuses fonctions sous R sont destinées à l'optimisation. Par la suite, on utilisera la fonction `optim` du package `stat` avec son algorithme par défaut (Nelder-Meadl).
+
+Pour utiliser cette fonction, il faut définir la fonction à minimiser et lui donner une valeur de paramètre "proche" de celui minimisant la fonction.
+
+```{r}
+optim(par = 1, fn = fun0)
+```
+2 arguments dans optim : 
+-par : paramètre / point de départ decrivant à partir de "ou" on doit commencer à optimiser
+-fn : la fonction en question
+
+La sortie donne l'algo utilisé : celui par defaut Nelder-Mead n'est pas le meilleur, propose d'utiliser Brent ou une autre fonction optimize. 
+
+Quand on ne precise pas, optim cherche les paramètres qui minimisent la fonction. Ici le minimum est trouvé en 1.18 et la valeur vaut -0.59. 
+
+Convergence : donne un code d'erreur si opti estime que son résultat est fiable ou non. S'il indique 0, valeur fiable (cf help) 
+
+```{r}
+optim(par = 1, fn = fun0, method = "Brent", lower = -1, upper = 2)
+```
+
+# Maximisation de la vraisemblance
+
+On va chercher à optimiser les coefficients de régression du modèle logistique précédent.
+
+Dans un premier temps, définir une fonction qui, à partir d'un vecteur de 4 coefficients de régression renvoie la log-vraisemblance associée à ce modèle :
+
+```{r}
+ml_bw <- function(coef) {
+  beta_0 <- coef[1]
+  beta_smoke <- coef[2]
+  beta_ht <- coef[3]
+  beta_ui <- coef[4]
+
+bw %>% 
+  mutate(
+    p1 = plogis(-1.5 + smoke + 1.5 * ht + ui), #on peut remplacer le 1.5, 1 ... par beta0, betaS  pour avoir des valeurs plus générales pouvant prendre n'importe quelle valeur et creer une fonction en fonction de ça ... cf correction 
+    ll1 = log(if_else(low == 1, p1, 1-p1))
+  ) %>%
+  pull(ll1) %>%
+  sum()
+  
+  }
+```
+
+Tester cette fonction sur un exemple de coefficients vus précédemment.
+
+```{r}
+ml_bw(coef = c(b_0 = -1.5, b_smoke = 1, b_ht = 1.5, b_ui = 1))
+```
+
+Optimiser les coefficients de régression pour maximiser la vraisemblance.
+```{r}
+optim(
+  par = c(b_0 = -1.5, b_smoke = 1, b_ht = 1.5, b_ui = 1),
+  fn = ml_bw, 
+  control = list(fnscale = -1)
+)
+```
+
+Comparer aux coefficients et à la log-vraisemblance obtenus via la fonction `glm` :
+```{r}
+fit <- glm(low ~ smoke + ht + ui, data = bw, family = binomial)
+coef(fit)
+```
+
+Optimisation pour C-index
+
+```{r}
+B0 <- -1.5
+Bs <- 1
+Bht <- 1.5
+Bui <- 1
+
+B0_2 <- -1
+Bs_2 <- 0.5
+Bht_2 <- 1
+Bui_2 <- 1
+
+bw <- bw %>% 
+  mutate(
+    predlin1 = B0 + (Bs*smoke) + (Bht*ht) + (Bui*ui),
+    predlin2 = B0_2 + (Bs_2*smoke) + (Bht_2*ht) + (Bui_2*ui),
+    pred1 = plogis(predlin1),
+    pred2 = plogis(predlin2),
+    vrais1 = ifelse(low == 1, pred1, 1 - pred1),
+    vrais2 = ifelse(low == 1, pred2, 1 - pred2),
+    log_vrais_1 = log(vrais1),
+    log_vrais_2 = log(vrais2)
+  )
+# on peut créer une fonction qui prend en argument des coeff et refait le debut de notre méthode (plutot que de creer deux pred avec valeurs différentes)
+
+# vraisemenblance totale et log vraisemblance totale (pas utilisées ici, juste pour voir)
+bw %>% 
+  summarise(
+    L1 = prod(log_vrais_1),
+    L2 = prod(log_vrais_2),
+    logL1 = sum(log_vrais_1),
+    logL2 = sum(log_vrais_2)
+  )
+
+
+library("pROC")
+
+?pROC
+
+roc1 <- roc(response=bw$low, predictor=bw$pred1, auc = TRUE, plot=TRUE)
+roc2 <- roc(response=bw$low, predictor=bw$pred2, auc = TRUE, plot=TRUE)
+
+roc1$predictor # valeurs utilisées pour construire la courbe 
+roc1$sensitivities # sensibilités associées
+roc1$specificities # specificites associées
+
+roc1_opt <- roc(response=bw$low, predictor=bw$pred1, auc = TRUE, plot=TRUE, smooth =TRUE )
+roc2_opt <- roc(response=bw$low, predictor=bw$pred2, auc = TRUE, plot=TRUE, smooth =TRUE )
+# smooth permet d'optimiser les resultats en maximisant l'aire sous la courbe
+
+# revient au même de faire : 
+sroc_1 <- smooth(roc1, n=100)
+plot(sroc_1,col="red")
+
+# coefficients optimises ? pas sure de la fonction à utiliser, recherche en cours
+roc1_opt$model
+sroc_1$model # donne deux coeff, correspondant à ? 
+```
+
+
+
+
+
+
+
