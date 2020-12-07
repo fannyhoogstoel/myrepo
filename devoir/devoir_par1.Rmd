@@ -38,6 +38,29 @@ Le tableau `devoir_sample` contient les données de cet échantillon. Les variab
 
 En faisant l'hypothèse que les poids de sondage décrivent directement le nombre de sujets représentés dans la population cible (on verra par la suite que cette hypothèse est discutable), estimer pour chacune des cohortes la prévalence de la maladie dans sa population-cible.
 
+Sans boucle pour population A : 
+```{r} 
+devoir_sample_2 <- na.omit(devoir_sample)
+
+prevA <- devoir_sample_2 %>% filter(cohorte == 'A') %>% summarise(sum(poids_sond * statut) / sum(poids_sond))
+
+paste('Prevalence population-cible A :', prevA)
+
+```
+
+Avec boucle pour l'ensemble : 
+```{r}
+cohortes <- LETTERS[1:5]
+prev <- matrix(NA, nrow = 1, ncol = length(cohortes))
+colnames(prev) <- cohortes
+for (i in (1:length(cohortes))){
+  prev[1,i] <- sum(devoir_sample_2[devoir_sample_2$cohorte == cohortes[i],]$poids_sond * devoir_sample_2[devoir_sample_2$cohorte == cohortes[i],]$statut) / sum(devoir_sample_2[devoir_sample_2$cohorte == cohortes[i],]$poids_sond)
+}
+paste('Prevalence de la population cible', cohortes[1:length(cohortes)], ':', prev[1,1:length(cohortes)])
+
+```
+
+
 
 ### Question 2
 
@@ -45,5 +68,10 @@ On souhaite à présent utiliser l'information issue de toutes les cohortes pour
 
 Avec la même hypothèse que pour la question 1, pourquoi ne peut-on pas simplement réaliser cette estimation sur l'ensemble de l'échantillon en utilisant directement les poids de sondage proposés ?
 
+Réponse : Les poids de sondage proposés correspondent ici à la probabilité d'inclusion pour chaque individu de nos sous populations (cohortes). Seulement avoir deux individus avec un même poids dans des cohortes différentes ne veut pas dire que ces derniers auront de nouveau le même poids si l'on s'interresse à toute la population. On souhaite dans ce cas utiliser le poids de représentativité decrit dans l'estimateur de Horvitz-Thompson.
+
 Quelle(s) information(s) serait nécessaire pour réaliser cette estimation ?
+
+Réponse : Pour utiliser cet estimateur, nous avons donc besoin de wi le point de représentativité égal à Ni / ni. Cependant, il nous manque la répartition Ni de la population globale pour calculer ce poids. 
+
 
