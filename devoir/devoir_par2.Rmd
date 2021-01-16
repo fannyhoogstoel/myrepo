@@ -1,7 +1,9 @@
 ---
 title: "Devoir - partie 2"
-output: 
-  html_notebook: 
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
     highlight: tango
     theme: cerulean
 ---
@@ -72,8 +74,195 @@ Une approche pour répondre à cette question consiste donc à :
 
 1. Générer une population théorique à partir de `sim_pop` et de paramètres arbitraires.
 
+```{r include=FALSE}
+pacman::p_load(here, tidyverse)
+set.seed(1234)
+```
+
+```{r include=FALSE}
+pop <- read_csv(here("devoir", "devoir_population.csv"))
+
+# Simulation d'une population avec prévalence
+sim_pop <- function(
+  data, # recensement Insee (doit êttre préalablement importé),
+  r0 = -1.8, r_age40 = -.25, r_age60 = -.8, r_age80 = -1.2, r_sexe = -.1,
+  r_csp2 = 0, r_csp3 = 0, r_csp4 = -.1, r_csp5 = -.5, r_csp6 = .3, r_csp7 = -.4, r_csp8 = 0 
+) {
+  data %>% 
+    mutate(
+      prev = plogis(r0 + 
+                      r_age40 * (age >= 40 & age < 60) +
+                      r_age60 * (age >= 60 & age < 80) +
+                      r_age80 * (age >= 80) +
+                      r_csp2 * (csp == 2) + 
+                      r_csp3 * (csp == 3) + 
+                      r_csp4 * (csp == 4) + 
+                      r_csp5 * (csp == 5) + 
+                      r_csp6 * (csp == 6) + 
+                      r_csp7 * (csp == 7) + 
+                      r_csp8 * (csp == 8)
+      ),
+      prev = rnorm(nrow(.), prev, prev * (1 - prev) / 2),
+      prev = pmax(prev, 0)
+    )
+}
+```
+
+```{r echo=TRUE}
+pop <- pop %>% sim_pop()
+```
+
 2. À partir de cette population dont on connaît la prévalence théorique de $M$, appliquer la méthode d'estimation proposée à un grand nombre d'échantillons obtenus via `sim_pop` pour l'évaluer.
 
+Méthode d'estimation proposée : 
+Nous choisissons dans un premier temps de créer des catégories, des classes pour chacun des individus. Cette catégorie devra traduire l'appartenance à un sexe, une classe d'âge (nous avons arbitrairement choisi des intervalles de 10 ans) et une csp. Pour cela, nous avons décidé de créer un code de 3 lettres reprenant ces informations :
+
+- 1ère lettre : le sexe. A pour femme, B pour homme 
+
+- 2ème lettre : la classe d'âge. A pour 20 à 29 ans, B pour 30 à 39 ans, C pour 40, à 49 ans ...
+
+- 3ème lette : la catégorie socio professionnelle. A pour csp = 1, B pour csp = 2, ...
+
+Ainsi une femme de 35 ans appartenant à la catégorie socio profesionnelle 4 aura un code attribué égal à : ABD
+
+Une fois ces classes créees, nous allons pouvoir calculer la fréquence d'apparition de ces dernières (ce qui nous montre la représentation de cette classe dans la population totale). Ainsi, en créant un code commun quel que soit la cohorte initiale, nous allons pouvoir rectifier la possible différence de poids entre deux individus ayant les mêmes caractéristiques. Pour cela nous utiliserons le package 'survey' sur plusieurs échantillons (100 ici pour garder un temps de calcul acceptable) et notamment la fonction 'postStratify'. 
+
+Ainsi, nous pourrons ainsi prendre en compte le poids relatif initial de chaque individu dans sa cohorte tout en le calibrant avec les effectifs réellement présent en Ile de France. 
+
+#### Création des classes 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+for (i in 1:nrow(pop)){
+  pop$categ_csp[i] <- LETTERS[pop$csp[i]]
+  pop$categ_sexe[i] <- LETTERS[pop$sexe_m[i] + 1]
+  pop$categ_age[i] <- LETTERS[as.integer(pop$age[i]/10) -1]
+}
+pop$categ <- as.character(paste(pop$categ_sexe, pop$categ_age, pop$categ_csp))
+
+distrib_pop <- pop %>% group_by(categ) %>% summarise(poids = sum(pond_pop)) 
+distrib_pop$poids <- distrib_pop$poids/sum(distrib_pop$poids)
+names(distrib_pop)[2] <- 'Freq'
+
+sum(distrib_pop$Freq) # on vérifie qu'on obtient bien 1
+```
+
+Ainsi la table relative à la population ressemble désormais à cela : 
+
+```{r echo=FALSE}
+library(knitr)
+kable(head(pop))
+```
+
+On peut ensuite créer une table, necessaire pour l'utilisation de "postStratify", donnant la distribution de chaque classe : 
+
+```{r echo=FALSE}
+kable(head(distrib_pop))
+```
+
+#### Création des échantillons
+
+```{r include=FALSE}
+draw_sample <- function(data, prob_max, cohort_noise = .2, strata_noise = .1,
+                        nA = 2686, nB = 2934, nC = 112, nD = 119, nE = 497) {
+  cohort_lag <- runif(5, 1 - cohort_noise, 1 + cohort_noise)
+  bind_rows(
+    data %>% 
+      filter(age >= 20, age <= 80) %>%
+      mutate(w0 = pond_pop / nA * cohort_lag[1]) %>% 
+      sample_n(size = nA, weight = w0, replace = TRUE) %>% 
+      mutate(w0 = runif(nA, w0 * (1 - strata_noise), w0 * (1 + strata_noise))) %>% 
+      mutate(cohorte = "A"),
+    
+    data %>% 
+      filter(age >= 20, age <= 90) %>%
+      mutate(w0 = pond_pop / nB * cohort_lag[2]) %>% 
+      sample_n(size = nB, weight = w0, replace = TRUE) %>% 
+      mutate(w0 = runif(nB, w0 * (1 - strata_noise), w0 * (1 + strata_noise))) %>% 
+      mutate(cohorte = "B"),
+    
+    data %>% 
+      filter(age >= 70, age <= 90, sexe_m == 0) %>%
+      mutate(w0 = pond_pop / nC * cohort_lag[2]) %>% 
+      sample_n(size = nC, weight = w0, replace = TRUE) %>% 
+      mutate(w0 = runif(nC, w0 * (1 - strata_noise), w0 * (1 + strata_noise))) %>% 
+      mutate(cohorte = "C"),
+    
+    data %>% 
+      filter(age >= 70, age <= 90, sexe_m == 1) %>%
+      mutate(w0 = pond_pop / nD * cohort_lag[4]) %>% 
+      sample_n(size = nD, weight = w0, replace = TRUE) %>% 
+      mutate(w0 = runif(nD, w0 * (1 - strata_noise), w0 * (1 + strata_noise))) %>% 
+      mutate(cohorte = "D"),
+    
+    data %>% 
+      filter(age >= 25, age <= 70) %>%
+      mutate(w0 = pond_pop / nE * cohort_lag[5]) %>% 
+      sample_n(size = nE, weight = w0, replace = TRUE) %>% 
+      mutate(w0 = runif(nE, w0 * (1 - strata_noise), w0 * (1 + strata_noise))) %>% 
+      mutate(cohorte = "E")
+    
+  ) %>% 
+    mutate(statut = rbinom(nrow(.), 1, prev)) %>% 
+    select(cohorte, everything(), poids_sond = w0, -pond_pop, -prev)
+}
+```
+
+```{r echo=TRUE}
+samples <- map(seq(100), ~draw_sample(pop))
+```
+
+#### Utilisation du package 'survey'
+
+Une fois les classes et échantillons crées, nous pouvons utiliser "postStratify" pour recalibrer les poids utilisés avec "svydesign" en fonction des effectifs d'Ile de France. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(survey)
+
+ss_design <- list()
+ss_design_post <- list()
+results <- matrix(NA, nrow = 100, ncol = 4)
+for (i in 1:100){
+  ss_design[[i]] <- svydesign(id = ~1, data = samples[[i]], weights = ~poids_sond)
+  ss_design_post[[i]] <- postStratify(ss_design[[i]], strata = ~categ, population = distrib_pop, partial = T)
+  results[i,1] <- svyciprop(~statut, ss_design_post[[i]])
+  results[i,2] <- confint(svyciprop(~statut, ss_design_post[[i]]))[1]
+  results[i,3] <- confint(svyciprop(~statut, ss_design_post[[i]]))[2]
+  results[i,4] <- SE(svyciprop(~statut, ss_design_post[[i]]))
+}
+results <- as.data.frame(results)
+names(results)[1] <- 'Mean'
+names(results)[2] <- '2.5%'
+names(results)[3] <- '97.5%'
+names(results)[4] <- 'SE'
+kable(head(results))
+```
+
+Nous pouvons ainsi créer un tableau reprenant pour chaque échantillon la valeur de prévalence obtenue, l'intervalle de confiance et la valeur de SE. 
+De ce tableau de résultats, nous souhaitons maintenant évaluer la méthode utilisée en fonction de la réelle valeur théorique relative à la population. 
+
+#### Evaluation de la méthode : 
+
+```{r echo=TRUE}
+prev_th <- sum(pop$pond_pop * pop$prev) / sum(pop$pond_pop)
+compt <- 0
+for (i in (1:nrow(results))){
+  if(prev_th > results[i,2] & prev_th < results[i,3]){
+    compt <- compt + 1
+  }
+}
+
+mean(prev_th > results[,2] & prev_th < results[,3]) # 95% ok 
+```
+
+Dans 95% des cas, la valeur théorique (prev_th dans le code ci-dessus) se trouve bien à l'intérieur de l'intervalle de confiance calculée pour les 100 échantillons (donc relativement proche de la valeur calculée). Notre modèle semble donc relativement bien fonctionner dans ce cas. 
+
+Nous pouvons tracer la distribution des prévalences obtenues pour les 100 échantillons. Nous obtenons ainsi le graphique ci-dessous :
+
+```{r echo=FALSE, out.width= '50%', fig.align='center'}
+hist(results$Mean, freq = F, main = 'Distribution des prévalences', xlab = 'Prévalence')
+abline(v = prev_th, col = 'red')
+text(0.099, 35, 'Prévalence théorique', col = 'red', srt = 90)
+```
 
 ### Question 2
 
@@ -82,35 +271,185 @@ On considère à présent que certains poids peuvent être manquants selon un m�
 On pourra si besoin s'aider de la fonction `hide_weights` dans le fichier joint qui permet, à partir d'un échantillon obtenu par `draw_sample`, de masquer arbitrairement certaines données.
 
 
+#### Ajout des données manquantes : 
+
+```{r echo=FALSE, out.width= '50%', fig.align='center'}
+hide_weights <- function(
+  data, p0 = -5, p_age = .02, p_sexe = -.2, 
+  p_csp2 = .04, p_csp3 = -.03, p_csp4 = -.02, p_csp5 = -.04, p_csp6 = -.03, p_csp7 = -.06, p_csp8 = -.05) {
+  data %>% 
+    mutate(
+      p_hdn = plogis(p0 + p_age * age + p_sexe * sexe_m +
+        p_csp2 * (csp == 2) + 
+        p_csp3 * (csp == 3) + 
+        p_csp4 * (csp == 4) + 
+        p_csp5 * (csp == 5) + 
+        p_csp6 * (csp == 6) + 
+        p_csp7 * (csp == 7) + 
+        p_csp8 * (csp == 8)),
+      hdn = rbinom(nrow(.), 1, p_hdn),
+      poids_sond = ifelse(hdn == 1, NA, poids_sond)
+    ) %>% 
+    select(-p_hdn, hdn)
+}
+
+compt_NA <- matrix(NA, nrow = 100, ncol = 1)
+for (i in 1:100){
+  samples[[i]] <- samples[[i]] %>% hide_weights
+  compt_NA[i,1] <- table(is.na(samples[[i]]$poids_sond))[2]
+}
+
+# table(is.na(samples[[10]]$poids_sond))[2] # on a bien créer des NA
+# table(complete.cases(samples[[10]])) 
+
+plot(compt_NA, ylab = "Nombre de données manquantes", xlab = "Numéro de l'échantillon", main = "Nombre de NA par échantillon")
+```
+
+Après utilisation de la fonction "hide_weights", nous observons bien un nombre certain de données manquantes pour chacun des échantillons. 
+
+
+Les valeurs manquantes pouvant être estimées en fonction de la cohorte, de l'âge, du sexe et de la CSP, nous décidons de créer de nouveaux échantillons reprenant seulement les colonnes interessantes pour l'imputation multiple. Souhaitant utiliser une imputation par *predictive mean matching* prenant en compte les covariables d'intérêt, nous allons pouvoir utiliser le package 'mice' pour compléter nos données. Une fois les imputations faites, nous ajoutons ces dernières à nos échantillons de base pour reprendre la méthode utilisée à la question 1. 
+
+#### Imputation multiple par pmm : 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(mice)
+data_imp <- list()
+for (i in 1:100){
+  data_imp[[i]] <- samples[[i]][,c('cohorte', 'age', 'sexe_m', 'csp', 'poids_sond')] # on ne garde que ce qui va servir à l'imputation 
+}
+
+# Exemples pour 1 ech : 
+# imp <- mice(data_imp[[1]], m = 5, method = "pmm") # imputation des NA par pmm 
+# data_imp <- complete(imp)   # data à la sortie de l'imputation 
+# table(is.na(data_imp))
+
+imp <- list()
+for (i in 1:100){
+  invisible(capture.output(imp[[i]] <- mice(data_imp[[i]], m = 5, method = "pmm"))) # imputation des NA, cachée avec invisible(capture.output()) pour sortie en htlm 
+  data_imp[[i]] <- complete(imp[[i]]) 
+}
+compt_NA_imp <- matrix(NA, nrow = 100, ncol = 1)
+for (i in 1:100){
+  compt_NA_imp[i,1] <- mean(complete.cases(data_imp[[i]]))
+}
+table(compt_NA_imp == 1) # plus aucune donnée manquante
+
+for (i in 1:100){
+  samples[[i]][,'poids_sond'] <- data_imp[[i]][,'poids_sond']
+}
+```
+
+Nous n'avons ainsi plus aucune donnée manquante, elles ont toutes été imputées par pmm en fonction des paramètres associés puis ré intégrées à notre base de données. 
+
+#### Application de la méthode utilisée à la question 1 : 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ss_design_2 <- list()
+ss_design_post_2 <- list()
+results_2 <- matrix(NA, nrow = 100, ncol = 4)
+for (i in 1:100){
+  ss_design_2[[i]] <- svydesign(id = ~1, data = samples[[i]], weights = ~poids_sond)
+  ss_design_post_2[[i]] <- postStratify(ss_design_2[[i]], strata = ~categ, population = distrib_pop, partial = T)
+  results_2[i,1] <- svyciprop(~statut, ss_design_post_2[[i]])
+  results_2[i,2] <- confint(svyciprop(~statut, ss_design_post_2[[i]]))[1]
+  results_2[i,3] <- confint(svyciprop(~statut, ss_design_post_2[[i]]))[2]
+  results_2[i,4] <- SE(svyciprop(~statut, ss_design_post_2[[i]]))
+}
+results_2 <- as.data.frame(results_2)
+names(results_2)[1] <- 'Mean'
+names(results_2)[2] <- '2.5%'
+names(results_2)[3] <- '97.5%'
+names(results_2)[4] <- 'SE'
+
+compt_2 <- 0
+for (i in (1:nrow(results_2))){
+  if(prev_th > results_2[i,2] & prev_th < results_2[i,3]){
+    compt_2 <- compt_2 + 1
+  }
+}
+mean(prev_th > results_2[,2] & prev_th < results_2[,3]) # 96% ok 
+compt_2 # 96% ok 
+
+results_all <- cbind(results, results_2)
+names(results_all)[5] <- 'Mean imp'
+names(results_all)[6] <- '2.5% imp'
+names(results_all)[7] <- '97.5% imp'
+names(results_all)[8] <- 'SE imp'
+kable(head(results_all))
+```
+
+Après avoir créer des données manquantes puis utiliser l'imputation multiple par pmm, nous remarquons que dans 96% des cas, la valeur théorique se trouve toujours à l'intérieur de l'intervalle de confiance obtenue dans l'échantillon. Notre méthode semble donc relativement correcte pour estimer la prévalence de notre population, même après un ajout de données manquantes. 
+
 ### Question 3
 
 Appliquer la méthode proposée sur les données d'origine pour estimer la prévalence de $M$ dans la population et commenter brièvement le résultat obtenu.
 
+#### Importation des données
 
-## Exemple d'utilisation des fonctions dans le fichier joint
-```{r}
-pacman::p_load(here, tidyverse)
+On souhaite avoir les mêmes catégories d'âge que celles observées dans le fichier devoir_population. Or ici l'âge allant de 21 à 90 ans, nous décidons de réduire ce dernier d'une année afin de coller au maximum aux données précédentes, la différence n'étant que d'une année. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+pop2 <- read_csv(here("devoir", "devoir_sample.csv"))
+# table(pop2$age)
+pop2$age <- pop2$age - 1
 ```
 
-### Importation des données
-```{r}
-pop <- read_csv(here("devoir", "devoir_population.csv"))
+#### Données manquantes et imputations 
 
-source(here("devoir_modelisation", "devoir.R"))
+```{r echo=TRUE}
+table(is.na(pop2$poids_sond))
 ```
 
-Toutes les fonctions sont ici utilisées avec les paramètres par défaut, qui sont modifiables si besoin.
+On remarque qu'il y a 69 données manquantes concernant les poids de sondage. Nous allons alors appliquer comme pour la question 2 une imputation multiple par pmm. 
 
-### Simulation d'une population d'après les données Insee
-```{r}
-(.pop <- pop %>% sim_pop())
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+data_imp_2 <-pop2[,c('cohorte', 'age', 'sexe_m', 'csp', 'poids_sond')] # on ne garde que ce qui va servir à l'imputation
+
+invisible(capture.output(imp_2 <- mice(data_imp_2, m = 5, method = "pmm"))) # imputation des NA par pmm, cachée avec invisible(capture.output()) pour sortie en htlm 
+data_imp_2 <- complete(imp_2)   # data à la sortie de l'imputation 
+table(is.na(data_imp_2))
+
+pop2[,'poids_sond'] <- data_imp_2[,'poids_sond']
+
 ```
 
-### Échantillonnage
-```{r}
-(.sample <- .pop %>% draw_sample())
+#### Création des classes 
+
+Maintenant que notre base ne comporte que des cas complets (sans poids manquant), nous pouvons comme fait pour les questions 1 et 2 créer des catégories d'appartenance, recalibrer les poids en fonction des effectifs réels et calculer la prévalence finale. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+for (i in 1:nrow(pop2)){
+  pop2$categ_csp[i] <- LETTERS[pop2$csp[i]]
+  pop2$categ_sexe[i] <- LETTERS[pop2$sexe_m[i] + 1]
+  pop2$categ_age[i] <- LETTERS[as.integer(pop2$age[i]/10) -1]
+}
+pop2$categ <- as.character(paste(pop2$categ_sexe, pop2$categ_age, pop2$categ_csp))
+
+distrib_pop2 <- pop2 %>% group_by(categ) %>% summarise() 
+setdiff(distrib_pop$categ, distrib_pop2$categ)
+setdiff(distrib_pop2$categ, distrib_pop$categ) # AAG manque dans les données de recensement 
+which(pop2$categ == 'A A G')
+pop2 <- pop2[-2481,]
+
+kable(head(pop2))
 ```
-### Masquage aléatoire de poids de sondage
-```{r}
-.sample %>% hide_weights()
+
+En créant les classes puis en comparant ces dernières avec les classes issues de la population générale, nous remarquons un certain nombre de différence. Ainsi 48 classes (catégories) sont présentes dans les données de recensement mais ne le sont pas dans les données de notre population. Cela ne pose pas problème puisque nous nous en servirons donc pas. Cependant, une catégorie : AAG manque dans le sens inverse. Cette dernière est présente dans nos données mais abensente dans les données inserm. Ne représentant qu'un individu (une femme entre 20 et 29 ans de csp 7) sur les 6348 au total, nous décidons simplement de l'enlever de l'étude. 
+
+#### Calcul de la prévalence (avec IC et SE)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+ss_design_final <- svydesign(id = ~1, data = pop2, weights = ~poids_sond)
+ss_design_post_final <- postStratify(ss_design_final, strata = ~categ, population = distrib_pop, partial = T)
+svyciprop(~statut, ss_design_post_final)
+confint(svyciprop(~statut, ss_design_post_final))
+SE(svyciprop(~statut, ss_design_post_final))
+
+# Sans le postStratify 
+svyciprop(~statut, ss_design_final)
 ```
+
+Il semblerait donc que la prévalence de $M$ dans la population soit égale à 0.0923 avec un intervalle de confiane égal à [0.0739, 0.11] et une SE égale à (0.01). Si l'on compare celle ci à la prévalence calculée sans l'utilisation de la fonction "postStratify" on remarque que cette dernière semble sous estimer la prévalence réelle tout en réduisant consirablement l'intervalle de confiance, ce qui semble peu probable. Cela est très certainement du au fait que les poids seuls pris en compte ne suffisent pas et qu'une calibration en fonction des données de l'inserm est indispensable. 
